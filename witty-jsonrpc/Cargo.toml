@@ -1,0 +1,26 @@
+[package]
+name = "witty-jsonrpc"
+version = "0.1.0"
+authors = ["Witnet Foundation <info@witnet.foundation>"]
+edition = "2021"
+repository = "witnet/witty-jsonrpc"
+readme = "README.md"
+license-file = "LICENSE"
+description = "A JSON-RPC server that can listen over multiple transports at the same time."
+
+[features]
+http = ["jsonrpc-http-server"]
+tcp = []
+ws = ["jsonrpc-ws-server"]
+
+[dependencies]
+futures = "0.3.28"
+log = "0.4.17"
+jsonrpc-core = "18.0.0"
+jsonrpc-http-server = { version = "18.0.0", optional = true }
+jsonrpc-ws-server = {version = "18.0.0", optional = true }
+serde = "1.0.163"
+threadpool = "1.8.1"
+
+[dev-dependencies]
+ctrlc = "3.3.1"
