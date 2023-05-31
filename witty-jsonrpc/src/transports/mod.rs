@@ -1,8 +1,6 @@
-use std::io::Error;
 use std::sync::{Arc, Mutex};
 
-use jsonrpc_core::IoHandler;
-use std::net::AddrParseError;
+use jsonrpc_core::{Metadata, MetaIoHandler};
 
 #[cfg(feature = "http")]
 pub mod http;
@@ -22,13 +20,13 @@ pub enum TransportError {
 }
 
 impl From<std::io::Error> for TransportError {
-    fn from(value: Error) -> Self {
+    fn from(value: std::io::Error) -> Self {
         Self::IO(value)
     }
 }
 
 impl From<std::net::AddrParseError> for TransportError {
-    fn from(value: AddrParseError) -> Self {
+    fn from(value: std::net::AddrParseError) -> Self {
         Self::Address(value)
     }
 }
@@ -43,10 +41,10 @@ impl From<crate::transports::ws::Error> for TransportError {
     }
 }
 
-pub trait Transport {
+pub trait Transport<M> where M: Metadata {
     fn requires_reset(&self) -> bool;
     fn running(&self) -> bool;
-    fn set_handler(&mut self, handler: Arc<Mutex<IoHandler>>) -> Result<(), TransportError>;
-    fn start(&mut self) -> Result<(), TransportError>;
+    fn set_handler(&mut self, handler: Arc<Mutex<MetaIoHandler<M>>>) -> Result<(), TransportError>;
+    fn start(&mut self, meta: M) -> Result<(), TransportError>;
     fn stop(&mut self) -> Result<(), TransportError>;
 }

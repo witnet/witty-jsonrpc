@@ -1,21 +1,21 @@
 use std::sync::{Arc, Mutex};
 
-use jsonrpc_http_server::{jsonrpc_core::IoHandler, Server, ServerBuilder};
+use jsonrpc_http_server::{jsonrpc_core::{Metadata, MetaIoHandler}, Server, ServerBuilder};
 
-use crate::{transports::TransportError, Transport};
+use crate::{Transport, transports::TransportError};
 
 #[derive(Debug)]
 pub struct HttpTransportSettings {
     pub address: String,
 }
 
-pub struct HttpTransport {
+pub struct HttpTransport<M> where M: Metadata {
     settings: HttpTransportSettings,
-    server_builder: Option<ServerBuilder>,
+    server_builder: Option<ServerBuilder<M>>,
     server: Option<Server>,
 }
 
-impl HttpTransport {
+impl<M> HttpTransport<M> where M: Metadata {
     pub fn new(settings: HttpTransportSettings) -> Self {
         Self {
             settings,
@@ -25,7 +25,7 @@ impl HttpTransport {
     }
 }
 
-impl Transport for HttpTransport {
+impl<M> Transport<M> for HttpTransport<M> where M: Metadata + Default + Unpin {
     fn requires_reset(&self) -> bool {
         true
     }
@@ -34,14 +34,14 @@ impl Transport for HttpTransport {
         self.server.is_some()
     }
 
-    fn set_handler(&mut self, handler: Arc<Mutex<IoHandler>>) -> Result<(), TransportError> {
+    fn set_handler(&mut self, handler: Arc<Mutex<MetaIoHandler<M>>>) -> Result<(), TransportError> {
         let handler = (*handler.lock().unwrap()).clone();
         self.server_builder = Some(ServerBuilder::new(handler));
 
         Ok(())
     }
 
-    fn start(&mut self) -> Result<(), TransportError> {
+    fn start(&mut self, _meta: M) -> Result<(), TransportError> {
         if self.server.is_some() {
             return Ok(());
         }

@@ -1,25 +1,24 @@
 use std::sync::{Arc, Mutex};
 
 use jsonrpc_ws_server::{
-    jsonrpc_core::{IoHandler, NoopMiddleware},
+    jsonrpc_core::{MetaIoHandler, Metadata, NoopMiddleware},
     Server, ServerBuilder,
 };
-
 pub use jsonrpc_ws_server::Error;
 
-use crate::{transports::TransportError, Transport};
+use crate::{Transport, transports::TransportError};
 
 pub struct WsTransportSettings {
     pub address: String,
 }
 
-pub struct WsTransport {
+pub struct WsTransport<M> where M: Metadata {
     settings: WsTransportSettings,
-    server_builder: Option<ServerBuilder<(), NoopMiddleware>>,
+    server_builder: Option<ServerBuilder<M, NoopMiddleware>>,
     server: Option<Server>,
 }
 
-impl WsTransport {
+impl<M> WsTransport<M> where M: Metadata {
     pub fn new(settings: WsTransportSettings) -> Self {
         Self {
             settings,
@@ -29,7 +28,7 @@ impl WsTransport {
     }
 }
 
-impl Transport for WsTransport {
+impl<M> Transport<M> for WsTransport<M> where M: Metadata + Default {
     fn requires_reset(&self) -> bool {
         true
     }
@@ -38,7 +37,7 @@ impl Transport for WsTransport {
         self.server.is_some()
     }
 
-    fn set_handler(&mut self, handler: Arc<Mutex<IoHandler>>) -> Result<(), TransportError> {
+    fn set_handler(&mut self, handler: Arc<Mutex<MetaIoHandler<M>>>) -> Result<(), TransportError> {
         let handler = (*handler.lock().unwrap()).clone();
 
         self.server_builder = Some(ServerBuilder::new(handler));
@@ -46,7 +45,7 @@ impl Transport for WsTransport {
         Ok(())
     }
 
-    fn start(&mut self) -> Result<(), TransportError> {
+    fn start(&mut self, _meta: M) -> Result<(), TransportError> {
         if self.running() {
             return Ok(());
         }

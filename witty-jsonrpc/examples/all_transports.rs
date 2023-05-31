@@ -1,12 +1,11 @@
-extern crate jsonrpc_core;
-extern crate witty_jsonrpc;
-
-use jsonrpc_core::Value;
-
 #[cfg(feature = "http")]
 #[cfg(feature = "tcp")]
 #[cfg(feature = "ws")]
 pub fn main() {
+    use std::sync::Arc;
+
+    use jsonrpc_core::Value;
+
     use witty_jsonrpc::{
         server::{MultipleTransportsServer, Server},
         transports::{
@@ -29,7 +28,7 @@ pub fn main() {
     };
     let transport_ws = WsTransport::new(settings_ws);
 
-    let mut server = MultipleTransportsServer::new();
+    let mut server = MultipleTransportsServer::new(Arc::new(()));
 
     server.add_transport(transport_http);
     server.add_transport(transport_tcp);
@@ -37,7 +36,7 @@ pub fn main() {
 
     server.add_method("say_hello", |params| {
         println!("Gotcha! Gonna say hello with params {:?}", params);
-        Ok(Value::String(format!(
+        futures::future::ok(Value::String(format!(
             "Hello, World! Your params are {:?}",
             params
         )))

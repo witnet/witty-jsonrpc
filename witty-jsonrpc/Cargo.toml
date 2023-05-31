@@ -9,15 +9,19 @@ license-file = "LICENSE"
 description = "A JSON-RPC server that can listen over multiple transports at the same time."
 
 [features]
+default = ["http", "tcp", "ws"]
+with_actix = ["actix"]
 http = ["jsonrpc-http-server"]
 tcp = []
 ws = ["jsonrpc-ws-server"]
 
 [dependencies]
+actix = { version = "0.13.0", optional = true }
 futures = "0.3.28"
 log = "0.4.17"
 jsonrpc-core = "18.0.0"
 jsonrpc-http-server = { version = "18.0.0", optional = true }
+jsonrpc-pubsub = "18.0.0"
 jsonrpc-ws-server = {version = "18.0.0", optional = true }
 serde = "1.0.163"
 threadpool = "1.8.1"

@@ -1,4 +1,4 @@
-use jsonrpc_core::{IoHandler, RpcMethodSync};
+use jsonrpc_core::{RpcMethodSimple, MetaIoHandler, Metadata};
 
 use crate::{transports::TransportError, Transport};
 use std::sync::{Arc, Mutex};
@@ -23,27 +23,41 @@ pub trait Server {
 
     fn add_method<F>(&mut self, name: &str, method: F)
     where
-        F: RpcMethodSync;
+        F: RpcMethodSimple;
+}
+
+#[cfg(feature = "with_actix")]
+pub trait ActixServer: Server {
+    fn add_actix_method<F>(&mut self, system: &actix::System, name: &str, method: F) where F: RpcMethodSimple;
 }
 
 #[derive(Default)]
-pub struct MultipleTransportsServer {
-    transports: Vec<Box<dyn Transport>>,
-    io_handler: Arc<Mutex<IoHandler>>,
+pub struct MultipleTransportsServer<M> where M: Metadata {
+    transports: Vec<Box<dyn Transport<M>>>,
+    // TODO: Change Mutex for RwLock
+    io_handler: Arc<Mutex<MetaIoHandler<M>>>,
+    meta: M,
 }
 
-impl MultipleTransportsServer {
+impl<M> MultipleTransportsServer<M> where M: Metadata {
     pub fn add_transport<T>(&mut self, mut transport: T)
     where
-        T: Transport + 'static,
+        T: Transport<M> + 'static,
     {
         transport.set_handler(self.io_handler.clone()).ok();
         self.transports.push(Box::new(transport));
     }
 
+    pub fn from_handler(handler: MetaIoHandler<M>, meta: M) -> Self {
+        let mut server = Self::new(meta);
+        server.io_handler = Arc::new(Mutex::new(handler));
+
+        server
+    }
+
     fn on_every_transport<'a, F, O>(&mut self, mut operation: F) -> Result<Vec<O>, TransportError>
     where
-        F: FnMut(&mut (dyn Transport + 'a)) -> Result<O, TransportError>,
+        F: FnMut(&mut (dyn Transport<M> + 'a)) -> Result<O, TransportError>,
     {
         self.transports
             .iter_mut()
@@ -51,12 +65,18 @@ impl MultipleTransportsServer {
             .collect::<Result<Vec<_>, _>>()
     }
 
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(meta: M) -> Self {
+        Self {
+            transports: vec![],
+            io_handler: Arc::new(Mutex::new(MetaIoHandler::default())),
+            meta
+        }
     }
 
     pub fn reset_all_transports(&mut self) -> Result<(), TransportError> {
         let handler = self.io_handler.clone();
+        let meta = self.meta.clone();
+
         self.on_every_transport(|transport| {
             if transport.requires_reset() {
                 let running = transport.running();
@@ -65,7 +85,7 @@ impl MultipleTransportsServer {
                 }
                 transport.set_handler(handler.clone())?;
                 if running {
-                    transport.start()?;
+                    transport.start(meta.clone())?;
                 }
             }
             Ok(())
@@ -75,11 +95,12 @@ impl MultipleTransportsServer {
     }
 }
 
-impl Server for MultipleTransportsServer {
+impl<M> Server for MultipleTransportsServer<M> where M: Metadata {
     type Error = ServerError;
 
     fn start(&mut self) -> Result<(), Self::Error> {
-        let _ = &self.on_every_transport(Transport::start)?;
+        let meta = self.meta.clone();
+        let _ = &self.on_every_transport(|transport| transport.start(meta.clone()))?;
 
         Ok(())
     }
@@ -92,30 +113,55 @@ impl Server for MultipleTransportsServer {
 
     fn add_method<F>(&mut self, name: &str, method: F)
     where
-        F: RpcMethodSync,
+        F: RpcMethodSimple,
     {
-        (*self.io_handler.lock().unwrap()).add_sync_method(name, method);
+        (*self.io_handler.lock().unwrap()).add_method(name, method);
         self.reset_all_transports().ok();
     }
 }
 
-pub struct SingleTransportServer {
-    inner: MultipleTransportsServer,
+#[cfg(feature = "with_actix")]
+impl<M> ActixServer for MultipleTransportsServer<M> where M: Metadata {
+    fn add_actix_method<F>(&mut self, system: &actix::System, name: &str, method: F) where F: RpcMethodSimple {
+        let system = system.clone();
+
+        self.add_method(name, move |params| {
+            let (tx, rx) = futures::channel::oneshot::channel();
+
+            let execution = method.call(params);
+
+            system
+                .arbiter()
+                .spawn(async move {
+                    let response = execution.await;
+                    tx.send(response).unwrap();
+                });
+
+            Box::pin(async {
+                rx.await.unwrap()
+            })
+
+        })
+    }
 }
 
-impl SingleTransportServer {
-    pub fn from_transport<T>(transport: T) -> Self
+pub struct SingleTransportServer<M = ()> where M: Metadata {
+    inner: MultipleTransportsServer<M>,
+}
+
+impl<M> SingleTransportServer<M> where M: Metadata {
+    pub fn from_transport<T>(transport: T, meta: M) -> Self
     where
-        T: Transport + 'static,
+        T: Transport<M> + 'static,
     {
-        let mut inner = MultipleTransportsServer::default();
+        let mut inner = MultipleTransportsServer::new(meta);
         inner.add_transport(transport);
 
         Self { inner }
     }
 }
 
-impl Server for SingleTransportServer {
+impl<M> Server for SingleTransportServer<M> where M: Metadata {
     type Error = ServerError;
 
     fn start(&mut self) -> Result<(), Self::Error> {
@@ -128,7 +174,7 @@ impl Server for SingleTransportServer {
 
     fn add_method<F>(&mut self, name: &str, method: F)
     where
-        F: RpcMethodSync,
+        F: RpcMethodSimple,
     {
         self.inner.add_method(name, method)
     }
