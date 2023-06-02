@@ -1,13 +1,8 @@
+extern crate jsonrpc_core;
+
 #[cfg(feature = "tcp")]
 pub fn main() {
-    use std::sync::Arc;
-
-    use jsonrpc_core::Value;
-
-    use witty_jsonrpc::{
-        server::{MultipleTransportsServer, Server},
-        transports::tcp::{TcpTransport, TcpTransportSettings},
-    };
+    use witty_jsonrpc::prelude::*;
 
     let settings_a = TcpTransportSettings {
         address: "127.0.0.1:9001".into(),
@@ -18,7 +13,7 @@ pub fn main() {
     };
     let transport_b = TcpTransport::new(settings_b);
 
-    let mut server = MultipleTransportsServer::new(Arc::new(()));
+    let mut server = WittyMultiServer::new();
     server.add_transport(transport_a);
     server.add_transport(transport_b);
 

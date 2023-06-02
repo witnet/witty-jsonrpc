@@ -1,7 +1,17 @@
-use jsonrpc_core::{RpcMethodSimple, MetaIoHandler, Metadata};
-
-use crate::{transports::TransportError, Transport};
 use std::sync::{Arc, Mutex};
+
+#[cfg(feature = "with_actix")]
+use actix::System;
+use jsonrpc_core::{Metadata, RpcMethodSimple};
+use jsonrpc_pubsub::{PubSubHandler, SubscribeRpcMethod, UnsubscribeRpcMethod};
+
+use crate::{
+    handler::{Handler, Session},
+    transports::{Transport, TransportError},
+};
+
+pub type WittyMonoServer = SingleTransportServer<PubSubHandler<Session>>;
+pub type WittyMultiServer = MultipleTransportsServer<PubSubHandler<Session>>;
 
 #[derive(Debug)]
 pub enum ServerError {
@@ -15,7 +25,10 @@ impl From<TransportError> for ServerError {
     }
 }
 
-pub trait Server {
+pub trait Server<H>
+where
+    H: Handler,
+{
     type Error;
 
     fn start(&mut self) -> Result<(), Self::Error>;
@@ -24,40 +37,67 @@ pub trait Server {
     fn add_method<F>(&mut self, name: &str, method: F)
     where
         F: RpcMethodSimple;
+
+    fn add_subscription<F, G>(
+        &mut self,
+        notification: &str,
+        subscribe: (&str, F),
+        unsubscribe: (&str, G),
+    ) where
+        F: SubscribeRpcMethod<H::Metadata>,
+        G: UnsubscribeRpcMethod<H::Metadata>;
+
+    fn describe_api(&self) -> Vec<String>;
 }
 
 #[cfg(feature = "with_actix")]
-pub trait ActixServer: Server {
-    fn add_actix_method<F>(&mut self, system: &actix::System, name: &str, method: F) where F: RpcMethodSimple;
+pub trait ActixServer<H>: Server<H>
+where
+    H: Handler,
+{
+    fn add_actix_method<F>(&mut self, system: &actix::System, name: &str, method: F)
+    where
+        F: RpcMethodSimple;
+
+    fn add_actix_subscription<F, G>(
+        &mut self,
+        system: &actix::System,
+        notification: &str,
+        subscribe: (&str, Arc<F>),
+        unsubscribe: (&str, Arc<G>),
+    ) where
+        F: SubscribeRpcMethod<H::Metadata>,
+        G: UnsubscribeRpcMethod<
+            H::Metadata,
+            Out = jsonrpc_core::BoxFuture<jsonrpc_core::Result<jsonrpc_core::Value>>,
+        >;
 }
 
 #[derive(Default)]
-pub struct MultipleTransportsServer<M> where M: Metadata {
-    transports: Vec<Box<dyn Transport<M>>>,
+pub struct MultipleTransportsServer<H>
+where
+    H: Handler,
+{
+    transports: Vec<Box<dyn Transport<H>>>,
     // TODO: Change Mutex for RwLock
-    io_handler: Arc<Mutex<MetaIoHandler<M>>>,
-    meta: M,
+    io_handler: Arc<Mutex<H>>,
 }
 
-impl<M> MultipleTransportsServer<M> where M: Metadata {
+impl<H> MultipleTransportsServer<H>
+where
+    H: Handler,
+{
     pub fn add_transport<T>(&mut self, mut transport: T)
     where
-        T: Transport<M> + 'static,
+        T: Transport<H> + 'static,
     {
         transport.set_handler(self.io_handler.clone()).ok();
         self.transports.push(Box::new(transport));
     }
 
-    pub fn from_handler(handler: MetaIoHandler<M>, meta: M) -> Self {
-        let mut server = Self::new(meta);
-        server.io_handler = Arc::new(Mutex::new(handler));
-
-        server
-    }
-
     fn on_every_transport<'a, F, O>(&mut self, mut operation: F) -> Result<Vec<O>, TransportError>
     where
-        F: FnMut(&mut (dyn Transport<M> + 'a)) -> Result<O, TransportError>,
+        F: FnMut(&mut (dyn Transport<H> + 'a)) -> Result<O, TransportError>,
     {
         self.transports
             .iter_mut()
@@ -65,17 +105,15 @@ impl<M> MultipleTransportsServer<M> where M: Metadata {
             .collect::<Result<Vec<_>, _>>()
     }
 
-    pub fn new(meta: M) -> Self {
+    pub fn new() -> Self {
         Self {
             transports: vec![],
-            io_handler: Arc::new(Mutex::new(MetaIoHandler::default())),
-            meta
+            io_handler: Arc::new(Mutex::new(H::new())),
         }
     }
 
     pub fn reset_all_transports(&mut self) -> Result<(), TransportError> {
         let handler = self.io_handler.clone();
-        let meta = self.meta.clone();
 
         self.on_every_transport(|transport| {
             if transport.requires_reset() {
@@ -85,7 +123,7 @@ impl<M> MultipleTransportsServer<M> where M: Metadata {
                 }
                 transport.set_handler(handler.clone())?;
                 if running {
-                    transport.start(meta.clone())?;
+                    transport.start()?;
                 }
             }
             Ok(())
@@ -95,12 +133,15 @@ impl<M> MultipleTransportsServer<M> where M: Metadata {
     }
 }
 
-impl<M> Server for MultipleTransportsServer<M> where M: Metadata {
+impl<H> Server<H> for MultipleTransportsServer<H>
+where
+    H: Handler,
+    H::Metadata: Metadata,
+{
     type Error = ServerError;
 
     fn start(&mut self) -> Result<(), Self::Error> {
-        let meta = self.meta.clone();
-        let _ = &self.on_every_transport(|transport| transport.start(meta.clone()))?;
+        let _ = &self.on_every_transport(|transport| transport.start())?;
 
         Ok(())
     }
@@ -118,64 +159,206 @@ impl<M> Server for MultipleTransportsServer<M> where M: Metadata {
         (*self.io_handler.lock().unwrap()).add_method(name, method);
         self.reset_all_transports().ok();
     }
+
+    fn add_subscription<F, G>(
+        &mut self,
+        notification: &str,
+        subscribe: (&str, F),
+        unsubscribe: (&str, G),
+    ) where
+        F: SubscribeRpcMethod<H::Metadata>,
+        G: UnsubscribeRpcMethod<H::Metadata>,
+    {
+        (*self.io_handler.lock().unwrap()).add_subscription(notification, subscribe, unsubscribe);
+        self.reset_all_transports().ok();
+    }
+
+    fn describe_api(&self) -> Vec<String> {
+        self.io_handler.lock().unwrap().describe_api()
+    }
 }
 
 #[cfg(feature = "with_actix")]
-impl<M> ActixServer for MultipleTransportsServer<M> where M: Metadata {
-    fn add_actix_method<F>(&mut self, system: &actix::System, name: &str, method: F) where F: RpcMethodSimple {
+impl<H> ActixServer<H> for MultipleTransportsServer<H>
+where
+    H: Handler,
+{
+    fn add_actix_method<F>(&mut self, system: &actix::System, name: &str, method: F)
+    where
+        F: RpcMethodSimple,
+    {
         let system = system.clone();
 
         self.add_method(name, move |params| {
             let (tx, rx) = futures::channel::oneshot::channel();
-
             let execution = method.call(params);
 
-            system
-                .arbiter()
-                .spawn(async move {
-                    let response = execution.await;
-                    tx.send(response).unwrap();
-                });
+            system.arbiter().spawn(async move {
+                let response = execution.await;
+                tx.send(response)
+                    .expect("Should be able to send result back to spawner");
+            });
 
             Box::pin(async {
-                rx.await.unwrap()
+                rx.await
+                    .expect("Should be able to await the oneshot channel")
             })
-
         })
+    }
+
+    fn add_actix_subscription<F, G>(
+        &mut self,
+        system: &System,
+        notification: &str,
+        subscribe: (&str, Arc<F>),
+        unsubscribe: (&str, Arc<G>),
+    ) where
+        F: SubscribeRpcMethod<H::Metadata>,
+        G: UnsubscribeRpcMethod<
+            H::Metadata,
+            Out = jsonrpc_core::BoxFuture<jsonrpc_core::Result<jsonrpc_core::Value>>,
+        >,
+    {
+        let subscribe_system = system.clone();
+        let unsubscribe_system = system.clone();
+        let (subscribe_name, subscribe_method) = subscribe;
+        let (unsubscribe_name, unsubscribe_method) = unsubscribe;
+
+        self.add_subscription(
+            notification,
+            (subscribe_name, move |params, meta, subscriber| {
+                let method = subscribe_method.clone();
+                subscribe_system.arbiter().spawn(async move {
+                    method.call(params, meta, subscriber);
+                });
+            }),
+            (unsubscribe_name, move |id, meta| {
+                let (tx, rx) = futures::channel::oneshot::channel();
+                let method = unsubscribe_method.clone();
+
+                unsubscribe_system.arbiter().spawn(async move {
+                    let response = method.call(id, meta).await;
+                    tx.send(response)
+                        .expect("Should be able to send result back to spawner");
+                });
+
+                async {
+                    rx.await
+                        .expect("Should be able to await the oneshot channel")
+                }
+            }),
+        )
     }
 }
 
-pub struct SingleTransportServer<M = ()> where M: Metadata {
-    inner: MultipleTransportsServer<M>,
+pub struct SingleTransportServer<H>
+where
+    H: Handler,
+{
+    inner: MultipleTransportsServer<H>,
 }
 
-impl<M> SingleTransportServer<M> where M: Metadata {
-    pub fn from_transport<T>(transport: T, meta: M) -> Self
+impl<H> SingleTransportServer<H>
+where
+    H: Handler,
+{
+    pub fn from_transport<T>(transport: T) -> Self
     where
-        T: Transport<M> + 'static,
+        T: Transport<H> + 'static,
     {
-        let mut inner = MultipleTransportsServer::new(meta);
+        let mut inner = MultipleTransportsServer::new();
         inner.add_transport(transport);
+
+        Self { inner }
+    }
+
+    pub fn handle_request_sync(&self, request: &str, meta: H::Metadata) -> Option<String> {
+        self.inner
+            .io_handler
+            .lock()
+            .unwrap()
+            .handle_request_sync(request, meta)
+    }
+
+    pub fn new<T>() -> Self
+    where
+        T: Transport<H> + 'static,
+    {
+        let inner = MultipleTransportsServer::new();
 
         Self { inner }
     }
 }
 
-impl<M> Server for SingleTransportServer<M> where M: Metadata {
+impl<H> Server<H> for SingleTransportServer<H>
+where
+    H: Handler,
+{
     type Error = ServerError;
 
     fn start(&mut self) -> Result<(), Self::Error> {
-        self.inner.start()
+        Server::start(&mut self.inner)
     }
 
     fn stop(&mut self) -> Result<(), Self::Error> {
-        self.inner.stop()
+        Server::stop(&mut self.inner)
     }
 
     fn add_method<F>(&mut self, name: &str, method: F)
     where
         F: RpcMethodSimple,
     {
-        self.inner.add_method(name, method)
+        Server::add_method(&mut self.inner, name, method)
+    }
+
+    fn add_subscription<F, G>(
+        &mut self,
+        notification: &str,
+        subscribe: (&str, F),
+        unsubscribe: (&str, G),
+    ) where
+        F: SubscribeRpcMethod<H::Metadata>,
+        G: UnsubscribeRpcMethod<H::Metadata>,
+    {
+        Server::add_subscription(&mut self.inner, notification, subscribe, unsubscribe)
+    }
+
+    fn describe_api(&self) -> Vec<String> {
+        Server::describe_api(&self.inner)
+    }
+}
+
+#[cfg(feature = "with_actix")]
+impl<H> ActixServer<H> for SingleTransportServer<H>
+where
+    H: Handler,
+{
+    fn add_actix_method<F>(&mut self, system: &System, name: &str, method: F)
+    where
+        F: RpcMethodSimple,
+    {
+        ActixServer::add_actix_method(&mut self.inner, system, name, method)
+    }
+
+    fn add_actix_subscription<F, G>(
+        &mut self,
+        system: &System,
+        notification: &str,
+        subscribe: (&str, Arc<F>),
+        unsubscribe: (&str, Arc<G>),
+    ) where
+        F: SubscribeRpcMethod<H::Metadata>,
+        G: UnsubscribeRpcMethod<
+            H::Metadata,
+            Out = jsonrpc_core::BoxFuture<jsonrpc_core::Result<jsonrpc_core::Value>>,
+        >,
+    {
+        ActixServer::add_actix_subscription::<F, G>(
+            &mut self.inner,
+            system,
+            notification,
+            subscribe,
+            unsubscribe,
+        )
     }
 }

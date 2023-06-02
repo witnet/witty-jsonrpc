@@ -1,111 +1,87 @@
-use std::{
-    io::{BufRead, BufReader, Write},
-    marker::Sync,
-    net::{TcpListener, TcpStream},
-    sync::{Arc, Mutex},
-    thread,
+use std::sync::{Arc, Mutex};
+
+use jsonrpc_core::NoopMiddleware;
+use jsonrpc_tcp_server::{RequestContext, Server, ServerBuilder};
+
+use crate::{
+    handler::Handler,
+    transports::{Transport, TransportError},
 };
-
-use jsonrpc_core::{Compatibility, Metadata, MetaIoHandler, NoopMiddleware};
-
-use threadpool::ThreadPool;
-
-use crate::{Transport, transports::TransportError};
 
 #[derive(Debug)]
 pub struct TcpTransportSettings {
     pub address: String,
 }
 
-pub struct TcpTransport<M> where M: Metadata {
-    // TODO: Change Mutex for RwLock
-    handler: Arc<Mutex<MetaIoHandler<M>>>,
-    listener: Option<Arc<TcpListener>>,
+pub struct TcpTransport<H>
+where
+    H: Handler,
+{
     settings: TcpTransportSettings,
+    server_builder: Option<ServerBuilder<H::Metadata, NoopMiddleware>>,
+    server: Option<Server>,
 }
 
-impl<M> TcpTransport<M> where M: Metadata {
+impl<H> TcpTransport<H>
+where
+    H: Handler,
+{
     pub fn new(settings: TcpTransportSettings) -> Self {
         Self {
-            handler: Arc::new(Mutex::new(MetaIoHandler::new(Compatibility::V2, NoopMiddleware))),
-            listener: None,
             settings,
-        }
-    }
-
-    fn handle_connection(mut stream: TcpStream, handler: Arc<Mutex<MetaIoHandler<M>>>, meta: M) {
-        let mut stream_writer = stream.try_clone().unwrap();
-        let buf_reader = BufReader::new(&mut stream);
-        for line in buf_reader.lines() {
-            let request = line.unwrap();
-            let handler = handler.lock().unwrap();
-
-            println!(">> {}", request);
-
-            let response = handler.handle_request_sync(&request, meta.clone());
-            if let Some(response) = response {
-                println!("<< {}", response);
-                stream_writer.write(response.as_bytes()).ok();
-                stream_writer.write("\n".as_bytes()).ok();
-            }
+            server_builder: None,
+            server: None,
         }
     }
 }
 
-impl<M> core::fmt::Debug for TcpTransport<M> where M: Metadata {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("TcpTransport")
-            .field("settings", &format_args!("{:?}", self.settings))
-            .field("listener", &format_args!("{:?}", self.listener))
-            .finish()
-    }
-}
-
-impl<M> Transport<M> for TcpTransport<M> where M: Metadata + Sync {
+impl<H> Transport<H> for TcpTransport<H>
+where
+    H: Handler + Send + 'static,
+    H::Metadata: Default,
+{
     fn requires_reset(&self) -> bool {
-        false
+        true
     }
 
     fn running(&self) -> bool {
-        self.listener.is_some()
+        self.server.is_some()
     }
 
-    fn set_handler(&mut self, handler: Arc<Mutex<MetaIoHandler<M>>>) -> Result<(), TransportError> {
-        self.handler = handler;
+    fn set_handler(&mut self, handler: Arc<Mutex<H>>) -> Result<(), TransportError> {
+        let handler = (*handler.lock().unwrap()).as_meta_io_handler();
+        let server_builder =
+            ServerBuilder::new(handler).session_meta_extractor(|context: &RequestContext| {
+                H::metadata_from_sender(context.sender.clone())
+            });
+        self.server_builder = Some(server_builder);
 
         Ok(())
     }
 
-    fn start(&mut self, meta: M) -> Result<(), TransportError> {
-        if self.listener.is_some() {
+    fn start(&mut self) -> Result<(), TransportError> {
+        if self.running() {
             return Ok(());
         }
 
-        let listener = Arc::new(TcpListener::bind(self.settings.address.clone())?);
-        let cloned_listener = listener.clone();
-        let cloned_handler = self.handler.clone();
-
-        thread::spawn(move || {
-            let pool = ThreadPool::new(4);
-            for stream in cloned_listener.incoming() {
-                let stream = stream.unwrap();
-                let inner_handler = cloned_handler.clone();
-                let inner_meta = meta.clone();
-
-                pool.execute(|| {
-                    Self::handle_connection(stream, inner_handler, inner_meta);
-                });
-            }
-        });
-
-        self.listener = Some(listener);
+        let builder = self
+            .server_builder
+            .take()
+            .ok_or(TransportError::NoHandler)?;
+        let socket_addr = self.settings.address.parse::<std::net::SocketAddr>()?;
+        self.server = Some(builder.start(&socket_addr)?);
 
         Ok(())
     }
 
     fn stop(&mut self) -> Result<(), TransportError> {
-        self.listener.take().ok_or(TransportError::NoHandler)?;
+        match self.server.take() {
+            None => Ok(()),
+            Some(server) => {
+                server.close();
 
-        Ok(())
+                Ok(())
+            }
+        }
     }
 }

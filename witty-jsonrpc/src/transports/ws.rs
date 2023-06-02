@@ -1,24 +1,30 @@
 use std::sync::{Arc, Mutex};
 
-use jsonrpc_ws_server::{
-    jsonrpc_core::{MetaIoHandler, Metadata, NoopMiddleware},
-    Server, ServerBuilder,
-};
 pub use jsonrpc_ws_server::Error;
+use jsonrpc_ws_server::{jsonrpc_core::NoopMiddleware, RequestContext, Server, ServerBuilder};
 
-use crate::{Transport, transports::TransportError};
+use crate::{
+    handler::Handler,
+    transports::{Transport, TransportError},
+};
 
 pub struct WsTransportSettings {
     pub address: String,
 }
 
-pub struct WsTransport<M> where M: Metadata {
+pub struct WsTransport<H>
+where
+    H: Handler,
+{
     settings: WsTransportSettings,
-    server_builder: Option<ServerBuilder<M, NoopMiddleware>>,
+    server_builder: Option<ServerBuilder<H::Metadata, NoopMiddleware>>,
     server: Option<Server>,
 }
 
-impl<M> WsTransport<M> where M: Metadata {
+impl<H> WsTransport<H>
+where
+    H: Handler,
+{
     pub fn new(settings: WsTransportSettings) -> Self {
         Self {
             settings,
@@ -28,7 +34,11 @@ impl<M> WsTransport<M> where M: Metadata {
     }
 }
 
-impl<M> Transport<M> for WsTransport<M> where M: Metadata + Default {
+impl<H> Transport<H> for WsTransport<H>
+where
+    H: Handler,
+    H::Metadata: Default,
+{
     fn requires_reset(&self) -> bool {
         true
     }
@@ -37,15 +47,18 @@ impl<M> Transport<M> for WsTransport<M> where M: Metadata + Default {
         self.server.is_some()
     }
 
-    fn set_handler(&mut self, handler: Arc<Mutex<MetaIoHandler<M>>>) -> Result<(), TransportError> {
-        let handler = (*handler.lock().unwrap()).clone();
-
-        self.server_builder = Some(ServerBuilder::new(handler));
+    fn set_handler(&mut self, handler: Arc<Mutex<H>>) -> Result<(), TransportError> {
+        let handler = (*handler.lock().unwrap()).as_meta_io_handler();
+        let server_builder =
+            ServerBuilder::new(handler).session_meta_extractor(|context: &RequestContext| {
+                H::metadata_from_sender(context.sender())
+            });
+        self.server_builder = Some(server_builder);
 
         Ok(())
     }
 
-    fn start(&mut self, _meta: M) -> Result<(), TransportError> {
+    fn start(&mut self) -> Result<(), TransportError> {
         if self.running() {
             return Ok(());
         }
@@ -67,7 +80,7 @@ impl<M> Transport<M> for WsTransport<M> where M: Metadata + Default {
                 server.close();
 
                 Ok(())
-            },
+            }
         }
     }
 }

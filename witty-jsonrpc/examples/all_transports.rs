@@ -2,18 +2,7 @@
 #[cfg(feature = "tcp")]
 #[cfg(feature = "ws")]
 pub fn main() {
-    use std::sync::Arc;
-
-    use jsonrpc_core::Value;
-
-    use witty_jsonrpc::{
-        server::{MultipleTransportsServer, Server},
-        transports::{
-            http::{HttpTransport, HttpTransportSettings},
-            tcp::{TcpTransport, TcpTransportSettings},
-            ws::{WsTransport, WsTransportSettings},
-        },
-    };
+    use witty_jsonrpc::prelude::*;
 
     let settings_http = HttpTransportSettings {
         address: "127.0.0.1:9001".into(),
@@ -28,7 +17,7 @@ pub fn main() {
     };
     let transport_ws = WsTransport::new(settings_ws);
 
-    let mut server = MultipleTransportsServer::new(Arc::new(()));
+    let mut server = WittyMultiServer::new();
 
     server.add_transport(transport_http);
     server.add_transport(transport_tcp);

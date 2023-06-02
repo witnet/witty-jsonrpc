@@ -1,8 +1,18 @@
-extern crate jsonrpc_core;
-extern crate actix;
-
+pub mod handler;
 pub mod server;
 pub mod transports;
 
-pub use crate::server::{Server, SingleTransportServer, MultipleTransportsServer};
-pub use crate::transports::Transport;
+pub mod prelude {
+    pub use jsonrpc_core::Value;
+    pub use jsonrpc_pubsub::{PubSubHandler, Session};
+
+    pub use crate::server::{
+        MultipleTransportsServer, Server, SingleTransportServer, WittyMonoServer, WittyMultiServer,
+    };
+    #[cfg(feature = "http")]
+    pub use crate::transports::http::{HttpTransport, HttpTransportSettings};
+    #[cfg(feature = "tcp")]
+    pub use crate::transports::tcp::{TcpTransport, TcpTransportSettings};
+    #[cfg(feature = "ws")]
+    pub use crate::transports::ws::{WsTransport, WsTransportSettings};
+}

@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use jsonrpc_core::{Metadata, MetaIoHandler};
+use crate::handler::Handler;
 
 #[cfg(feature = "http")]
 pub mod http;
@@ -41,10 +41,38 @@ impl From<crate::transports::ws::Error> for TransportError {
     }
 }
 
-pub trait Transport<M> where M: Metadata {
+pub trait Transport<H>
+where
+    H: Handler,
+{
     fn requires_reset(&self) -> bool;
     fn running(&self) -> bool;
-    fn set_handler(&mut self, handler: Arc<Mutex<MetaIoHandler<M>>>) -> Result<(), TransportError>;
-    fn start(&mut self, meta: M) -> Result<(), TransportError>;
+    fn set_handler(&mut self, handler: Arc<Mutex<H>>) -> Result<(), TransportError>;
+    fn start(&mut self) -> Result<(), TransportError>;
     fn stop(&mut self) -> Result<(), TransportError>;
+}
+
+impl<H> Transport<H> for ()
+where
+    H: Handler,
+{
+    fn requires_reset(&self) -> bool {
+        false
+    }
+
+    fn running(&self) -> bool {
+        true
+    }
+
+    fn set_handler(&mut self, _handler: Arc<Mutex<H>>) -> Result<(), TransportError> {
+        Ok(())
+    }
+
+    fn start(&mut self) -> Result<(), TransportError> {
+        Ok(())
+    }
+
+    fn stop(&mut self) -> Result<(), TransportError> {
+        Ok(())
+    }
 }

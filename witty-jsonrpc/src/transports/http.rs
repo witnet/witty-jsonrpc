@@ -1,21 +1,30 @@
 use std::sync::{Arc, Mutex};
 
-use jsonrpc_http_server::{jsonrpc_core::{Metadata, MetaIoHandler}, Server, ServerBuilder};
+use jsonrpc_http_server::{Server, ServerBuilder};
 
-use crate::{Transport, transports::TransportError};
+use crate::{
+    handler::Handler,
+    transports::{Transport, TransportError},
+};
 
 #[derive(Debug)]
 pub struct HttpTransportSettings {
     pub address: String,
 }
 
-pub struct HttpTransport<M> where M: Metadata {
+pub struct HttpTransport<H>
+where
+    H: Handler,
+{
     settings: HttpTransportSettings,
-    server_builder: Option<ServerBuilder<M>>,
+    server_builder: Option<ServerBuilder<H::Metadata>>,
     server: Option<Server>,
 }
 
-impl<M> HttpTransport<M> where M: Metadata {
+impl<H> HttpTransport<H>
+where
+    H: Handler,
+{
     pub fn new(settings: HttpTransportSettings) -> Self {
         Self {
             settings,
@@ -25,7 +34,11 @@ impl<M> HttpTransport<M> where M: Metadata {
     }
 }
 
-impl<M> Transport<M> for HttpTransport<M> where M: Metadata + Default + Unpin {
+impl<H> Transport<H> for HttpTransport<H>
+where
+    H: Handler,
+    H::Metadata: Default,
+{
     fn requires_reset(&self) -> bool {
         true
     }
@@ -34,14 +47,14 @@ impl<M> Transport<M> for HttpTransport<M> where M: Metadata + Default + Unpin {
         self.server.is_some()
     }
 
-    fn set_handler(&mut self, handler: Arc<Mutex<MetaIoHandler<M>>>) -> Result<(), TransportError> {
-        let handler = (*handler.lock().unwrap()).clone();
+    fn set_handler(&mut self, handler: Arc<Mutex<H>>) -> Result<(), TransportError> {
+        let handler = (*handler.lock().unwrap()).as_meta_io_handler();
         self.server_builder = Some(ServerBuilder::new(handler));
 
         Ok(())
     }
 
-    fn start(&mut self, _meta: M) -> Result<(), TransportError> {
+    fn start(&mut self) -> Result<(), TransportError> {
         if self.server.is_some() {
             return Ok(());
         }
@@ -62,7 +75,7 @@ impl<M> Transport<M> for HttpTransport<M> where M: Metadata + Default + Unpin {
             Some(server) => {
                 server.close();
                 Ok(())
-            },
+            }
         }
     }
 }

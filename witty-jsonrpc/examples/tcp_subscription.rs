@@ -1,3 +1,6 @@
+extern crate jsonrpc_pubsub;
+extern crate witty_jsonrpc;
+
 #[cfg(feature = "tcp")]
 pub fn main() {
     use witty_jsonrpc::prelude::*;
@@ -7,14 +10,6 @@ pub fn main() {
     };
     let transport = TcpTransport::new(settings);
     let mut server = WittyMonoServer::from_transport(transport);
-
-    server.add_method("say_hello", |params| {
-        println!("Gotcha! Gonna say hello with params {:?}", params);
-        futures::future::ok(Value::String(format!(
-            "Hello, World! Your params are {:?}",
-            params
-        )))
-    });
 
     server.start().unwrap();
 

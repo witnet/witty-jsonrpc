@@ -12,7 +12,7 @@ description = "A JSON-RPC server that can listen over multiple transports at the
 default = ["http", "tcp", "ws"]
 with_actix = ["actix"]
 http = ["jsonrpc-http-server"]
-tcp = []
+tcp = ["jsonrpc-tcp-server"]
 ws = ["jsonrpc-ws-server"]
 
 [dependencies]
@@ -22,9 +22,9 @@ log = "0.4.17"
 jsonrpc-core = "18.0.0"
 jsonrpc-http-server = { version = "18.0.0", optional = true }
 jsonrpc-pubsub = "18.0.0"
+jsonrpc-tcp-server = { version = "18.0.0", optional = true }
 jsonrpc-ws-server = {version = "18.0.0", optional = true }
 serde = "1.0.163"
-threadpool = "1.8.1"
 
 [dev-dependencies]
 ctrlc = "3.3.1"
