@@ -8,11 +8,14 @@ use crate::{
     transports::{Transport, TransportError},
 };
 
+/// Settings needed for constructing a `TcpTransport`.
 #[derive(Debug)]
 pub struct TcpTransportSettings {
+    /// An IP or address to bind the TCP listener to.
     pub address: String,
 }
 
+/// A JSON-RPC over TCP transport built around the `jsonrpc_tcp_server` library.
 pub struct TcpTransport<H>
 where
     H: Handler,
@@ -26,6 +29,7 @@ impl<H> TcpTransport<H>
 where
     H: Handler,
 {
+    /// Create a new instance of this transport.
     pub fn new(settings: TcpTransportSettings) -> Self {
         Self {
             settings,

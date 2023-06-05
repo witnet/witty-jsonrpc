@@ -7,11 +7,14 @@ use crate::{
     transports::{Transport, TransportError},
 };
 
+/// Settings needed for constructing an `HttpTransport`.
 #[derive(Debug)]
 pub struct HttpTransportSettings {
+    /// An IP or address to bind the HTTP listener to.
     pub address: String,
 }
 
+/// A JSON-RPC over HTTP transport built around the `jsonrpc_http_server` library.
 pub struct HttpTransport<H>
 where
     H: Handler,
@@ -25,6 +28,7 @@ impl<H> HttpTransport<H>
 where
     H: Handler,
 {
+    /// Create a new instance of this transport.
     pub fn new(settings: HttpTransportSettings) -> Self {
         Self {
             settings,

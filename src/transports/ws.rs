@@ -8,10 +8,13 @@ use crate::{
     transports::{Transport, TransportError},
 };
 
+/// Settings needed for constructing a `WsTransport`.
 pub struct WsTransportSettings {
+    /// An IP or address to bind the WebSockets listener to.
     pub address: String,
 }
 
+/// A JSON-RPC over WebSockets transport built around the `jsonrpc_ws_server` library.
 pub struct WsTransport<H>
 where
     H: Handler,
@@ -25,6 +28,7 @@ impl<H> WsTransport<H>
 where
     H: Handler,
 {
+    /// Create a new instance of this transport.
     pub fn new(settings: WsTransportSettings) -> Self {
         Self {
             settings,
