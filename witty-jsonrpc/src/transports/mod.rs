@@ -51,28 +51,3 @@ where
     fn start(&mut self) -> Result<(), TransportError>;
     fn stop(&mut self) -> Result<(), TransportError>;
 }
-
-impl<H> Transport<H> for ()
-where
-    H: Handler,
-{
-    fn requires_reset(&self) -> bool {
-        false
-    }
-
-    fn running(&self) -> bool {
-        true
-    }
-
-    fn set_handler(&mut self, _handler: Arc<Mutex<H>>) -> Result<(), TransportError> {
-        Ok(())
-    }
-
-    fn start(&mut self) -> Result<(), TransportError> {
-        Ok(())
-    }
-
-    fn stop(&mut self) -> Result<(), TransportError> {
-        Ok(())
-    }
-}

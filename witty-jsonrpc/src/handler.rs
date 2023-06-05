@@ -9,6 +9,15 @@ pub struct Session {
     inner: Option<Arc<jsonrpc_pubsub::Session>>,
 }
 
+impl Session {
+    pub fn mock() -> Session {
+        let (sender, _) = futures::channel::mpsc::unbounded();
+        let inner = Some(Arc::from(jsonrpc_pubsub::Session::new(sender)));
+
+        Self { inner }
+    }
+}
+
 impl From<Arc<jsonrpc_pubsub::Session>> for Session {
     fn from(value: Arc<jsonrpc_pubsub::Session>) -> Self {
         Session { inner: Some(value) }

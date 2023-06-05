@@ -55,13 +55,13 @@ pub trait ActixServer<H>: Server<H>
 where
     H: Handler,
 {
-    fn add_actix_method<F>(&mut self, system: &actix::System, name: &str, method: F)
+    fn add_actix_method<F>(&mut self, system: &Option<actix::System>, name: &str, method: F)
     where
         F: RpcMethodSimple;
 
     fn add_actix_subscription<F, G>(
         &mut self,
-        system: &actix::System,
+        system: &Option<actix::System>,
         notification: &str,
         subscribe: (&str, Arc<F>),
         unsubscribe: (&str, Arc<G>),
@@ -93,6 +93,13 @@ where
     {
         transport.set_handler(self.io_handler.clone()).ok();
         self.transports.push(Box::new(transport));
+    }
+
+    pub fn handle_request_sync(&self, request: &str, meta: H::Metadata) -> Option<String> {
+        self.io_handler
+            .lock()
+            .unwrap()
+            .handle_request_sync(request, meta)
     }
 
     fn on_every_transport<'a, F, O>(&mut self, mut operation: F) -> Result<Vec<O>, TransportError>
@@ -183,23 +190,32 @@ impl<H> ActixServer<H> for MultipleTransportsServer<H>
 where
     H: Handler,
 {
-    fn add_actix_method<F>(&mut self, system: &actix::System, name: &str, method: F)
+    fn add_actix_method<F>(&mut self, system: &Option<actix::System>, name: &str, method: F)
     where
         F: RpcMethodSimple,
     {
         let system = system.clone();
 
         self.add_method(name, move |params| {
-            let (tx, rx) = futures::channel::oneshot::channel();
+            let system = system.clone();
             let execution = method.call(params);
+            let (tx, rx) = futures::channel::oneshot::channel();
 
-            system.arbiter().spawn(async move {
-                let response = execution.await;
-                tx.send(response)
-                    .expect("Should be able to send result back to spawner");
-            });
+            Box::pin(async move {
+                // The future that will actually execute the method
+                let fut = async move {
+                    let response = execution.await;
+                    tx.send(response)
+                        .expect("Should be able to send result back to spawner");
+                };
 
-            Box::pin(async {
+                // If an actix system is available, spawn there, otherwise simply wait on the future
+                if let Some(system) = system.clone() {
+                    system.arbiter().spawn(fut);
+                } else {
+                    fut.await;
+                }
+
                 rx.await
                     .expect("Should be able to await the oneshot channel")
             })
@@ -208,7 +224,7 @@ where
 
     fn add_actix_subscription<F, G>(
         &mut self,
-        system: &System,
+        system: &Option<System>,
         notification: &str,
         subscribe: (&str, Arc<F>),
         unsubscribe: (&str, Arc<G>),
@@ -228,24 +244,40 @@ where
             notification,
             (subscribe_name, move |params, meta, subscriber| {
                 let method = subscribe_method.clone();
-                subscribe_system.arbiter().spawn(async move {
+
+                // If an actix system is available, spawn there, otherwise simply wait on the future
+                if let Some(system) = subscribe_system.clone() {
+                    system.arbiter().spawn(async move {
+                        method.call(params, meta, subscriber);
+                    });
+                } else {
                     method.call(params, meta, subscriber);
-                });
+                }
             }),
             (unsubscribe_name, move |id, meta| {
-                let (tx, rx) = futures::channel::oneshot::channel();
+                let system = unsubscribe_system.clone();
                 let method = unsubscribe_method.clone();
+                let execution = method.call(id, meta);
+                let (tx, rx) = futures::channel::oneshot::channel();
 
-                unsubscribe_system.arbiter().spawn(async move {
-                    let response = method.call(id, meta).await;
-                    tx.send(response)
-                        .expect("Should be able to send result back to spawner");
-                });
+                Box::pin(async move {
+                    // The future that will actually execute the method
+                    let fut = async move {
+                        let response = execution.await;
+                        tx.send(response)
+                            .expect("Should be able to send result back to spawner");
+                    };
 
-                async {
+                    // If an actix system is available, spawn there, otherwise simply wait on the future
+                    if let Some(system) = system.clone() {
+                        system.arbiter().spawn(fut);
+                    } else {
+                        fut.await;
+                    }
+
                     rx.await
                         .expect("Should be able to await the oneshot channel")
-                }
+                })
             }),
         )
     }
@@ -273,11 +305,7 @@ where
     }
 
     pub fn handle_request_sync(&self, request: &str, meta: H::Metadata) -> Option<String> {
-        self.inner
-            .io_handler
-            .lock()
-            .unwrap()
-            .handle_request_sync(request, meta)
+        self.inner.handle_request_sync(request, meta)
     }
 
     pub fn new<T>() -> Self
@@ -333,7 +361,7 @@ impl<H> ActixServer<H> for SingleTransportServer<H>
 where
     H: Handler,
 {
-    fn add_actix_method<F>(&mut self, system: &System, name: &str, method: F)
+    fn add_actix_method<F>(&mut self, system: &Option<System>, name: &str, method: F)
     where
         F: RpcMethodSimple,
     {
@@ -342,7 +370,7 @@ where
 
     fn add_actix_subscription<F, G>(
         &mut self,
-        system: &System,
+        system: &Option<System>,
         notification: &str,
         subscribe: (&str, Arc<F>),
         unsubscribe: (&str, Arc<G>),
